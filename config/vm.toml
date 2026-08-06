@@ -1,0 +1,30 @@
+# vpnbridge-vm — runs inside the Windows VM, alongside the VPN clients.
+
+# Listen on the host <-> VM network. Use the VM's address rather than 0.0.0.0 if
+# you do not want the agent exposed on the VPN interfaces themselves.
+listen = "0.0.0.0:17321"
+
+# Must match host.toml.
+token = "change-me"
+
+# Destinations this agent is willing to dial. Empty means "anything the VM can
+# reach", which also lets the host borrow the VM's default route.
+allow = [
+    "10.20.0.0/16",
+    "172.20.0.0/16",
+    "192.168.60.0/24",
+]
+
+# Checked before `allow`; keeps the host from reaching back into itself.
+deny = [
+    "127.0.0.0/8",
+    "169.254.0.0/16",
+]
+
+# Optional source address for outgoing traffic. Set it to the VPN adapter's
+# address when Windows picks the wrong interface (`ipconfig` shows the address).
+# bind_ip = "10.20.7.31"
+
+connect_timeout_ms = 8000
+udp_timeout_secs = 60
+tcp_nodelay = true

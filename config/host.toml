@@ -1,0 +1,43 @@
+# vpnbridge-host — runs on the linux host as root (or with CAP_NET_ADMIN).
+#
+# NOTE: `routes` and `exclude` are top-level keys, so they must stay above the
+# first [table] header — otherwise TOML folds them into that table.
+
+# Networks only reachable through the VPNs running inside the VM.
+# Everything else keeps using the host's normal routing.
+routes = [
+    "10.20.0.0/16",
+    "172.20.0.0/16",
+    "192.168.60.0/24",
+]
+
+# Pinned to their current next hop so a broad entry in `routes` cannot swallow
+# them. The host <-> VM network belongs here whenever it overlaps.
+exclude = [
+    "192.168.122.0/24",
+]
+
+[server]
+# The Windows VM, on the host <-> VM network (libvirt default: 192.168.122.0/24).
+address = "192.168.122.100:17321"
+# Must match vm.toml. Leave empty to disable authentication.
+token = "change-me"
+connect_timeout_ms = 5000
+tcp_nodelay = true
+
+[tun]
+name = "vpnbr0"
+address = "10.211.0.1"
+netmask = "255.255.255.0"
+mtu = 1500
+# Install/remove the routes above automatically on start/stop.
+auto_route = true
+
+# Optional: resolve internal names through the VPN's DNS.
+# Point systemd-resolved at it for the internal domains, e.g.
+#   resolvectl dns vpnbr0 127.0.0.1:15353
+#   resolvectl domain vpnbr0 ~corp.example.com
+[dns]
+listen = "127.0.0.1:15353"
+upstream = ["10.20.0.53:53"]
+timeout_ms = 5000

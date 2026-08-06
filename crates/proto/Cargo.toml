@@ -1,0 +1,10 @@
+[package]
+name = "vpnbridge-proto"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Wire protocol shared by the vpnbridge host and VM agents"
+
+[dependencies]
+tokio = { workspace = true }

@@ -1,0 +1,23 @@
+[Unit]
+Description=vpnbridge host agent (TUN -> VPN VM)
+Documentation=https://github.com/
+After=network-online.target libvirtd.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/vpnbridge-host --config /etc/vpnbridge/host.toml
+Restart=on-failure
+RestartSec=3
+
+# Needs to create the TUN device and edit the routing table.
+AmbientCapabilities=CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/etc/vpnbridge
+
+[Install]
+WantedBy=multi-user.target
