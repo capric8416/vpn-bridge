@@ -49,7 +49,8 @@ jobs:
         run: |
           mkdir -p release
           tar -czf "release/vpnbridge-${{ github.ref_name }}-linux-x64.tar.gz" \
-            -C target/x86_64-unknown-linux-gnu/release vpnbridge-host
+            -C target/x86_64-unknown-linux-gnu/release vpnbridge-host \
+            -C "$GITHUB_WORKSPACE/config" host.toml
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v4
@@ -75,8 +76,9 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path release | Out-Null
+          Copy-Item config\vm.toml release\vm.toml
           Compress-Archive `
-            -Path target\release\vpnbridge-vm.exe `
+            -Path target\release\vpnbridge-vm.exe, release\vm.toml `
             -DestinationPath "release\vpnbridge-${{ github.ref_name }}-windows-x64.zip" `
             -Force
 
