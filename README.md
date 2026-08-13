@@ -69,6 +69,9 @@ cargo check -p vpnbridge-vm --target x86_64-pc-windows-msvc
   `/32` 直连路由做兜底。
 - `tun.auto_route = true` 时，启动装路由、退出（Ctrl-C / SIGTERM）删路由。
   `exclude` 里已存在的同名路由不会被改动，也不会在退出时被删。
+- `server.reconnect_interval_ms` —— host 连接 VM 失败后的重试间隔，默认
+  `10000` 毫秒。连接失败或超时会保留当前流并持续重试；认证失败、目标被拒绝等
+  VM 明确返回的错误不会重试。
 
 虚拟机关键项：
 
@@ -170,7 +173,7 @@ ip route show | grep vpnbr0
 | 现象 | 检查 |
 |---|---|
 | `creating TUN device ... (needs root or CAP_NET_ADMIN)` | 用 sudo 跑，或 `setcap cap_net_admin+ep` |
-| 日志里 `tunnel setup failed` + `connection refused` | 虚拟机上 agent 没跑，或 Windows 防火墙没放行 |
+| 日志里 `connecting to VM agent failed; retrying` | 虚拟机上 agent 没跑，或 Windows 防火墙没放行；host 会按 `server.reconnect_interval_ms` 自动重试 |
 | `VM agent refused ...: authentication failed` | 两边 `token` 不一致 |
 | `VM agent refused ...: target not allowed by server policy` | 目标不在 `vm.toml` 的 `allow` 里 |
 | 连上后马上断、或者整个网络卡死 | `exclude` 没写宿主机 ↔ 虚拟机网段，隧道被自己抓了 |

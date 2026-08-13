@@ -79,6 +79,8 @@ address = "192.168.122.240:17321"
 # Must match vm.toml. Leave empty to disable authentication.
 token = "2814c7f16f91720c80d2692befcde5471f68959395e38b9e8a7dfb177e12d72c670eb29a86eab4825fdcef32ea2a130ef6fbd22f32fe121786e722c2dc11a3a8"
 connect_timeout_ms = 10000
+# Retry a failed host -> VM TCP connection after this delay (default: 10000).
+reconnect_interval_ms = 10000
 tcp_nodelay = true
 
 [tun]

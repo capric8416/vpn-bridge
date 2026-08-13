@@ -8,7 +8,7 @@ use anyhow::{bail, Context, Result};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::net::TcpStream;
-use tokio::time::timeout;
+use tokio::time::{sleep, timeout};
 
 use vpnbridge_proto::{read_datagram, write_datagram, Address, Cmd, Request, Response, Status};
 
@@ -27,10 +27,26 @@ impl Client {
     /// Connect to the VM agent and complete the handshake for `target`.
     pub async fn open(&self, cmd: Cmd, target: Address) -> Result<TcpStream> {
         let dial = Duration::from_millis(self.cfg.connect_timeout_ms);
-        let mut stream = timeout(dial, TcpStream::connect(self.cfg.address))
-            .await
-            .with_context(|| format!("timed out connecting to VM agent {}", self.cfg.address))?
-            .with_context(|| format!("connecting to VM agent {}", self.cfg.address))?;
+        let retry = Duration::from_millis(self.cfg.reconnect_interval_ms);
+        let mut stream = loop {
+            let result = timeout(dial, TcpStream::connect(self.cfg.address)).await;
+            match result {
+                Ok(Ok(stream)) => break stream,
+                Ok(Err(err)) => tracing::warn!(
+                    agent = %self.cfg.address,
+                    %err,
+                    retry_ms = self.cfg.reconnect_interval_ms,
+                    "connecting to VM agent failed; retrying"
+                ),
+                Err(_) => tracing::warn!(
+                    agent = %self.cfg.address,
+                    timeout_ms = self.cfg.connect_timeout_ms,
+                    retry_ms = self.cfg.reconnect_interval_ms,
+                    "connecting to VM agent timed out; retrying"
+                ),
+            }
+            sleep(retry).await;
+        };
         if self.cfg.tcp_nodelay {
             stream.set_nodelay(true).ok();
         }
@@ -129,4 +145,49 @@ pub fn is_benign_eof(err: &std::io::Error) -> bool {
         err.kind(),
         UnexpectedEof | BrokenPipe | ConnectionReset | ConnectionAborted | NotConnected | TimedOut
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+    use tokio::net::{TcpListener, TcpSocket};
+
+    #[tokio::test]
+    async fn retries_until_vm_agent_accepts_connections() {
+        let reservation = TcpSocket::new_v4().unwrap();
+        reservation
+            .bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .unwrap();
+        let agent = reservation.local_addr().unwrap();
+        let client = Client::new(Arc::new(ServerConfig {
+            address: agent,
+            token: "test-token".into(),
+            connect_timeout_ms: 50,
+            reconnect_interval_ms: 20,
+            tcp_nodelay: true,
+        }));
+        let target = Address::Ip("10.0.0.1:443".parse().unwrap());
+
+        let open = tokio::spawn(async move { client.open(Cmd::ConnectTcp, target).await });
+
+        // Keep the port bound but not listening long enough for at least one
+        // connection attempt to fail, then bring up a minimal VM agent.
+        sleep(Duration::from_millis(30)).await;
+        drop(reservation);
+        let listener = TcpListener::bind(agent).await.unwrap();
+        let (mut stream, _) = timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .unwrap()
+            .unwrap();
+        let request = Request::read_from(&mut stream).await.unwrap();
+        assert_eq!(request.token, "test-token");
+        Response::ok().write_to(&mut stream).await.unwrap();
+
+        timeout(Duration::from_secs(1), open)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
 }

@@ -30,6 +30,9 @@ pub struct ServerConfig {
     pub token: String,
     #[serde(default = "default_connect_timeout")]
     pub connect_timeout_ms: u64,
+    /// Delay before retrying a failed connection to the VM agent.
+    #[serde(default = "default_reconnect_interval")]
+    pub reconnect_interval_ms: u64,
     #[serde(default = "default_true")]
     pub tcp_nodelay: bool,
 }
@@ -79,6 +82,9 @@ fn default_true() -> bool {
 fn default_connect_timeout() -> u64 {
     5_000
 }
+fn default_reconnect_interval() -> u64 {
+    10_000
+}
 fn default_tun_name() -> String {
     "vpnbr0".to_string()
 }
@@ -112,6 +118,9 @@ impl HostConfig {
         if self.tun.mtu < 1280 {
             bail!("tun.mtu must be at least 1280 (ipstack minimum)");
         }
+        if self.server.reconnect_interval_ms == 0 {
+            bail!("server.reconnect_interval_ms must be greater than zero");
+        }
 
         let server_ip = self.server.address.ip();
         if self.captures(server_ip) && !self.excludes(server_ip) {
@@ -138,5 +147,39 @@ impl HostConfig {
 
     pub fn excludes(&self, ip: IpAddr) -> bool {
         self.exclude.iter().any(|net| net.contains(&ip))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MINIMAL_CONFIG: &str = r#"
+routes = ["10.0.0.0/8"]
+
+[server]
+address = "127.0.0.1:17321"
+"#;
+
+    #[test]
+    fn reconnect_interval_defaults_to_ten_seconds() {
+        let cfg: HostConfig = toml::from_str(MINIMAL_CONFIG).unwrap();
+        assert_eq!(cfg.server.reconnect_interval_ms, 10_000);
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn reconnect_interval_can_be_configured() {
+        let text = format!("{MINIMAL_CONFIG}\nreconnect_interval_ms = 2500\n");
+        let cfg: HostConfig = toml::from_str(&text).unwrap();
+        assert_eq!(cfg.server.reconnect_interval_ms, 2_500);
+        cfg.validate().unwrap();
+    }
+
+    #[test]
+    fn reconnect_interval_must_not_be_zero() {
+        let text = format!("{MINIMAL_CONFIG}\nreconnect_interval_ms = 0\n");
+        let cfg: HostConfig = toml::from_str(&text).unwrap();
+        assert!(cfg.validate().is_err());
     }
 }
