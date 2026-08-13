@@ -60,6 +60,10 @@ cargo check -p vpnbridge-vm --target x86_64-pc-windows-msvc
 
 示例见 `config/host.toml`、`config/vm.toml`，两边的 `token` 必须一致。
 
+两端都可以用 `--config <路径>`（或 `-c <路径>`）明确指定配置文件。未指定时，
+程序先查找当前工作目录下的 `host.toml` / `vm.toml`，再查找可执行文件所在目录下
+的同名文件；两处都不存在则报错退出。
+
 宿主机关键项：
 
 - `routes` —— 要转发给虚拟机的网段列表，其余流量走宿主机原有路由，完全不受影响。

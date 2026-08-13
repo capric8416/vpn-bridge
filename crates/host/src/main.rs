@@ -9,11 +9,11 @@ mod dns;
 mod route;
 mod tunnel;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use ipstack::{IpStack, IpStackConfig, IpStackStream};
 use tokio::io::AsyncWriteExt;
@@ -31,9 +31,10 @@ use crate::tunnel::Client;
     about = "Forward selected networks to a VPN-connected VM"
 )]
 struct Cli {
-    /// Path to the TOML configuration file.
-    #[arg(short, long, default_value = "/etc/vpnbridge/host.toml")]
-    config: PathBuf,
+    /// Path to the TOML configuration file. If omitted, searches the current
+    /// directory and then the executable's directory for host.toml.
+    #[arg(short, long)]
+    config: Option<PathBuf>,
     /// Validate the configuration and exit without touching the network.
     #[arg(long)]
     check: bool,
@@ -47,9 +48,10 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     init_tracing(&cli.log);
 
-    let cfg = Arc::new(HostConfig::load(&cli.config)?);
+    let config_path = resolve_config_path(cli.config, "host.toml")?;
+    let cfg = Arc::new(HostConfig::load(&config_path)?);
     if cli.check {
-        println!("configuration OK: {}", cli.config.display());
+        println!("configuration OK: {}", config_path.display());
         println!("  VM agent   : {}", cfg.server.address);
         println!(
             "  tun device : {} {}/{}",
@@ -149,6 +151,95 @@ async fn main() -> Result<()> {
 
     routes.cleanup();
     Ok(())
+}
+
+fn resolve_config_path(explicit: Option<PathBuf>, file_name: &str) -> Result<PathBuf> {
+    if let Some(path) = explicit {
+        return Ok(path);
+    }
+
+    let current_dir = std::env::current_dir().context("getting current working directory")?;
+    let executable = std::env::current_exe().context("getting executable path")?;
+    choose_config_path(file_name, &current_dir, &executable, Path::is_file)
+}
+
+fn choose_config_path(
+    file_name: &str,
+    current_dir: &Path,
+    executable: &Path,
+    is_file: impl Fn(&Path) -> bool,
+) -> Result<PathBuf> {
+    let current = current_dir.join(file_name);
+    if is_file(&current) {
+        return Ok(current);
+    }
+
+    let executable_dir = executable
+        .parent()
+        .context("executable path has no parent directory")?;
+    let adjacent = executable_dir.join(file_name);
+    if is_file(&adjacent) {
+        return Ok(adjacent);
+    }
+
+    bail!(
+        "configuration file `{file_name}` not found; checked {} and {}",
+        current.display(),
+        adjacent.display()
+    )
+}
+
+#[cfg(test)]
+mod config_path_tests {
+    use super::*;
+
+    #[test]
+    fn current_directory_takes_precedence() {
+        let result = choose_config_path(
+            "host.toml",
+            Path::new("work"),
+            Path::new("bin/vpnbridge-host"),
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(result, Path::new("work/host.toml"));
+    }
+
+    #[test]
+    fn falls_back_to_executable_directory() {
+        let result = choose_config_path(
+            "host.toml",
+            Path::new("work"),
+            Path::new("bin/vpnbridge-host"),
+            |path| path == Path::new("bin/host.toml"),
+        )
+        .unwrap();
+        assert_eq!(result, Path::new("bin/host.toml"));
+    }
+
+    #[test]
+    fn reports_all_implicit_locations_when_missing() {
+        let err = choose_config_path(
+            "host.toml",
+            Path::new("work"),
+            Path::new("bin/vpnbridge-host"),
+            |_| false,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains(&Path::new("work/host.toml").display().to_string()));
+        assert!(err.contains(&Path::new("bin/host.toml").display().to_string()));
+    }
+
+    #[test]
+    fn command_line_config_is_optional_and_preserved() {
+        let implicit = Cli::try_parse_from(["vpnbridge-host"]).unwrap();
+        assert_eq!(implicit.config, None);
+
+        let explicit =
+            Cli::try_parse_from(["vpnbridge-host", "--config", "custom/config.toml"]).unwrap();
+        assert_eq!(explicit.config, Some(PathBuf::from("custom/config.toml")));
+    }
 }
 
 fn dispatch(stream: IpStackStream, client: &Client) {
