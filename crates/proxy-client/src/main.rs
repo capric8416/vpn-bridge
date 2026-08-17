@@ -201,8 +201,10 @@ mod config_path_tests {
         )
         .unwrap_err()
         .to_string();
-        assert!(error.contains("work/proxy-client.toml"));
-        assert!(error.contains("bin/proxy-client.toml"));
+        let current_path = Path::new("work").join("proxy-client.toml");
+        let executable_path = Path::new("bin").join("proxy-client.toml");
+        assert!(error.contains(&current_path.display().to_string()));
+        assert!(error.contains(&executable_path.display().to_string()));
     }
 
     #[test]
