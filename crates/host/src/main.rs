@@ -10,13 +10,16 @@ mod route;
 mod tunnel;
 
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll};
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Parser;
 use ipstack::{IpStack, IpStackConfig, IpStackStream};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tun_rs::{AsyncDevice, DeviceBuilder, Layer};
 
 use vpnbridge_proto::{Address, Cmd};
 
@@ -302,20 +305,61 @@ fn dispatch(stream: IpStackStream, client: &Client) {
     }
 }
 
-fn create_tun(cfg: &HostConfig) -> Result<tun::AsyncDevice> {
-    let mut tun_cfg = tun::Configuration::default();
-    tun_cfg
-        .tun_name(&cfg.tun.name)
-        .address(cfg.tun.address)
-        .netmask(cfg.tun.netmask)
+struct TunDevice(AsyncDevice);
+
+impl AsyncRead for TunDevice {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if buf.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        match self.0.poll_recv(cx, buf.initialize_unfilled()) {
+            Poll::Ready(Ok(read)) => {
+                buf.advance(read);
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(err)) => Poll::Ready(Err(err)),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl AsyncWrite for TunDevice {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        self.0.poll_send(cx, buf)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+}
+
+fn create_tun(cfg: &HostConfig) -> Result<TunDevice> {
+    DeviceBuilder::new()
+        .name(&cfg.tun.name)
+        .layer(Layer::L3)
+        .ipv4(cfg.tun.address, cfg.tun.netmask, None)
         .mtu(cfg.tun.mtu)
-        .up();
-    tun::create_as_async(&tun_cfg).with_context(|| {
-        format!(
-            "creating TUN device {} (needs root or CAP_NET_ADMIN)",
-            cfg.tun.name
-        )
-    })
+        .enable(true)
+        .build_async()
+        .map(TunDevice)
+        .with_context(|| {
+            format!(
+                "creating TUN device {} (needs root or CAP_NET_ADMIN)",
+                cfg.tun.name
+            )
+        })
 }
 
 async fn shutdown_signal() {

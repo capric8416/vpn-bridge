@@ -23,4 +23,4 @@ tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
 ipstack = "1.0"
-tun = { version = "0.8", features = ["async"] }
+tun-rs = { version = "2", features = ["async"] }
