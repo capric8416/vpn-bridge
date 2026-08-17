@@ -1,6 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/proto", "crates/host", "crates/vm"]
+members = [
+    "crates/proto",
+    "crates/host",
+    "crates/vm",
+    "crates/proxy-client",
+    "crates/proxy-server",
+]
 
 [workspace.package]
 version = "0.1.0"

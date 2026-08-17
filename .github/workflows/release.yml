@@ -1,4 +1,4 @@
-name: release
+name: vpnbridge release
 
 on:
   push:
@@ -8,9 +8,44 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
+  detect-changes:
+    name: detect vpnbridge changes
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.changes.outputs.changed }}
+    steps:
+      - name: Checkout full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Compare with previous tag
+        id: changes
+        shell: bash
+        run: |
+          previous_tag="$(git describe --tags --abbrev=0 "${GITHUB_SHA}^" 2>/dev/null || true)"
+          if [[ -z "$previous_tag" ]]; then
+            changed=true
+            echo "No previous tag found; building vpnbridge artifacts."
+          elif git diff --quiet "$previous_tag" "$GITHUB_SHA" -- \
+            crates/host crates/vm crates/proto; then
+            changed=false
+            echo "No host/vm/proto changes since $previous_tag; skipping vpnbridge release."
+          else
+            changed=true
+            echo "Detected host/vm/proto changes since $previous_tag."
+          fi
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+
   build-linux:
     name: build linux x64
+    needs: detect-changes
+    if: needs.detect-changes.outputs.changed == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -36,10 +71,10 @@ jobs:
           zig version
 
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: cargo fmt -p vpnbridge-host -p vpnbridge-vm -p vpnbridge-proto -- --check
 
       - name: Test
-        run: cargo test --workspace
+        run: cargo test -p vpnbridge-host -p vpnbridge-vm -p vpnbridge-proto
 
       - name: Build Linux release with glibc 2.17
         run: cargo zigbuild --release -p vpnbridge-host --target x86_64-unknown-linux-gnu.2.17
@@ -61,6 +96,8 @@ jobs:
 
   build-windows:
     name: build windows x64
+    needs: detect-changes
+    if: needs.detect-changes.outputs.changed == 'true'
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -92,8 +129,14 @@ jobs:
   publish-release:
     name: publish release
     needs:
+      - detect-changes
       - build-linux
       - build-windows
+    if: >-
+      always() &&
+      needs.detect-changes.outputs.changed == 'true' &&
+      needs.build-linux.result == 'success' &&
+      needs.build-windows.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - name: Download release artifacts

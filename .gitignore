@@ -2,3 +2,5 @@
 **/*.rs.bk
 Cargo.lock.orig
 *.pdb
+config/proxy-server-cert.pem
+config/proxy-server-key.pem

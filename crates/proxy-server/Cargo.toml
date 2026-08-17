@@ -1,0 +1,27 @@
+[package]
+name = "proxy-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Cross-platform QUIC exit server for vpnbridge"
+
+[[bin]]
+name = "proxy-server"
+path = "src/main.rs"
+
+[dependencies]
+vpnbridge-proto = { workspace = true }
+
+anyhow = { workspace = true }
+clap = { workspace = true }
+ipnet = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+quinn = "0.11"
+rcgen = "0.14"
+rustls-pemfile = "2"
