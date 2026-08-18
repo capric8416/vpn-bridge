@@ -32,6 +32,10 @@ pub struct ServerConfig {
     pub bind_ip: Option<IpAddr>,
     #[serde(default = "default_connect_timeout")]
     pub connect_timeout_ms: u64,
+    #[serde(default = "default_dns_timeout")]
+    pub dns_timeout_ms: u64,
+    #[serde(default = "default_tcp_idle_timeout")]
+    pub tcp_idle_timeout_secs: u64,
     #[serde(default = "default_udp_timeout")]
     pub udp_timeout_secs: u64,
     #[serde(default = "default_max_streams")]
@@ -66,6 +70,18 @@ impl ServerConfig {
         }
         if self.max_concurrent_streams == 0 {
             bail!("max_concurrent_streams must be greater than zero");
+        }
+        if self.connect_timeout_ms == 0 {
+            bail!("connect_timeout_ms must be greater than zero");
+        }
+        if self.dns_timeout_ms == 0 {
+            bail!("dns_timeout_ms must be greater than zero");
+        }
+        if self.tcp_idle_timeout_secs == 0 {
+            bail!("tcp_idle_timeout_secs must be greater than zero");
+        }
+        if self.udp_timeout_secs == 0 {
+            bail!("udp_timeout_secs must be greater than zero");
         }
         Ok(())
     }
@@ -110,6 +126,14 @@ fn default_connect_timeout() -> u64 {
     8_000
 }
 
+fn default_dns_timeout() -> u64 {
+    5_000
+}
+
+fn default_tcp_idle_timeout() -> u64 {
+    300
+}
+
 fn default_udp_timeout() -> u64 {
     60
 }
@@ -149,6 +173,8 @@ token = "secret"
         assert!(cfg.grpc_enabled);
         assert_eq!(cfg.quic_listen(), cfg.listen);
         assert_eq!(cfg.grpc_listen(), cfg.listen);
+        assert_eq!(cfg.dns_timeout_ms, 5_000);
+        assert_eq!(cfg.tcp_idle_timeout_secs, 300);
     }
 
     #[test]
@@ -170,5 +196,19 @@ token = "secret"
         assert!(token_matches("secret", "secret"));
         assert!(!token_matches("secret", "secre"));
         assert!(!token_matches("secret", "Secret"));
+    }
+
+    #[test]
+    fn rejects_zero_timeouts() {
+        for field in [
+            "connect_timeout_ms",
+            "dns_timeout_ms",
+            "tcp_idle_timeout_secs",
+            "udp_timeout_secs",
+        ] {
+            let text = format!("listen = \"0.0.0.0:4433\"\ntoken = \"secret\"\n{field} = 0\n");
+            let cfg: ServerConfig = toml::from_str(&text).unwrap();
+            assert!(cfg.validate().is_err(), "{field} accepted zero");
+        }
     }
 }

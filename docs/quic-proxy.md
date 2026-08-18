@@ -66,6 +66,22 @@ Set `quic_enabled = false` to force gRPC/TCP, or `grpc_enabled = false` to test 
 one transport must remain enabled. If an override is omitted, that transport uses the legacy
 `server` or `listen` value, so existing configuration files remain valid.
 
+Server-side deadlines are configured independently:
+
+```toml
+# One deadline for resolving a domain name.
+dns_timeout_ms = 5000
+# Time with no data in either direction before a TCP flow is closed.
+tcp_idle_timeout_secs = 300
+# Deadline for each upstream TCP connection attempt.
+connect_timeout_ms = 10000
+# Idle timeout for a UDP flow.
+udp_timeout_secs = 60
+```
+
+TCP activity in either direction resets `tcp_idle_timeout_secs`. DNS resolution uses one total
+deadline; TCP connection candidates still use `connect_timeout_ms` for each attempt.
+
 ```bash
 proxy-server --config proxy-server.toml --check
 proxy-server --config proxy-server.toml

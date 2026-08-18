@@ -88,5 +88,9 @@ deny = [
 # Optional source address of the server-side VPN adapter.
 # bind_ip = "192.0.2.10"
 connect_timeout_ms = 10000
+# Total deadline for resolving one domain name.
+dns_timeout_ms = 5000
+# Close a TCP flow when neither direction transfers data for this long.
+tcp_idle_timeout_secs = 300
 udp_timeout_secs = 60
 max_concurrent_streams = 4096
