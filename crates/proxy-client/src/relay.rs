@@ -3,29 +3,28 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use ipstack::IpStackStream;
-use quinn::{RecvStream, SendStream};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use vpnbridge_proto::{read_datagram, write_datagram, Address, Cmd};
 
-use crate::quic::QuicClient;
+use crate::transport::{FlowRecv, FlowSend, TransportClient};
 
-pub fn dispatch(stream: IpStackStream, client: Arc<QuicClient>) {
+pub fn dispatch(stream: IpStackStream, client: Arc<TransportClient>) {
     match stream {
         IpStackStream::Tcp(tcp) => {
             let source = tcp.local_addr();
             let destination = tcp.peer_addr();
             tokio::spawn(async move {
                 tracing::debug!(%source, %destination, "TCP flow");
-                let (send, recv) =
-                    match client.open(Cmd::ConnectTcp, Address::Ip(destination)).await {
-                        Ok(streams) => streams,
-                        Err(err) => {
-                            tracing::warn!(%destination, %err, "TCP proxy setup failed");
-                            return;
-                        }
-                    };
-                if let Err(err) = relay_tcp(tcp, send, recv).await {
+                let flow = match client.open(Cmd::ConnectTcp, Address::Ip(destination)).await {
+                    Ok(flow) => flow,
+                    Err(err) => {
+                        tracing::warn!(%destination, %err, "TCP proxy setup failed");
+                        return;
+                    }
+                };
+                tracing::debug!(%destination, transport = ?flow.transport, "TCP proxy transport selected");
+                if let Err(err) = relay_tcp(tcp, flow.send, flow.recv).await {
                     tracing::debug!(%destination, %err, "TCP flow ended");
                 }
             });
@@ -35,14 +34,15 @@ pub fn dispatch(stream: IpStackStream, client: Arc<QuicClient>) {
             let destination = udp.peer_addr();
             tokio::spawn(async move {
                 tracing::debug!(%source, %destination, "UDP flow");
-                let (send, recv) = match client.open(Cmd::BindUdp, Address::Ip(destination)).await {
-                    Ok(streams) => streams,
+                let flow = match client.open(Cmd::BindUdp, Address::Ip(destination)).await {
+                    Ok(flow) => flow,
                     Err(err) => {
                         tracing::warn!(%destination, %err, "UDP proxy setup failed");
                         return;
                     }
                 };
-                if let Err(err) = relay_udp(udp, send, recv).await {
+                tracing::debug!(%destination, transport = ?flow.transport, "UDP proxy transport selected");
+                if let Err(err) = relay_udp(udp, flow.send, flow.recv).await {
                     tracing::debug!(%destination, %err, "UDP flow ended");
                 }
             });
@@ -59,24 +59,24 @@ pub fn dispatch(stream: IpStackStream, client: Arc<QuicClient>) {
     }
 }
 
-async fn relay_tcp<S>(local: S, mut send: SendStream, mut recv: RecvStream) -> Result<()>
+async fn relay_tcp<S>(local: S, mut send: FlowSend, mut recv: FlowRecv) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let (mut local_recv, mut local_send) = tokio::io::split(local);
     let upload = async {
         tokio::io::copy(&mut local_recv, &mut send).await?;
-        send.finish().map_err(io::Error::other)
+        send.shutdown().await
     };
     let download = async {
         tokio::io::copy(&mut recv, &mut local_send).await?;
         local_send.shutdown().await
     };
-    tokio::try_join!(upload, download).context("relaying TCP over QUIC")?;
+    tokio::try_join!(upload, download).context("relaying TCP over proxy transport")?;
     Ok(())
 }
 
-async fn relay_udp<S>(local: S, mut send: SendStream, mut recv: RecvStream) -> Result<()>
+async fn relay_udp<S>(local: S, mut send: FlowSend, mut recv: FlowRecv) -> Result<()>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -86,7 +86,7 @@ where
         loop {
             let length = local_recv.read(&mut buffer).await?;
             if length == 0 {
-                send.finish().map_err(io::Error::other)?;
+                send.shutdown().await?;
                 return Ok::<_, io::Error>(());
             }
             write_datagram(&mut send, &buffer[..length]).await?;
@@ -102,8 +102,8 @@ where
         Ok::<_, io::Error>(())
     };
     tokio::select! {
-        result = upload => result.context("uploading UDP over QUIC")?,
-        result = download => result.context("downloading UDP over QUIC")?,
+        result = upload => result.context("uploading UDP over proxy transport")?,
+        result = download => result.context("downloading UDP over proxy transport")?,
     }
     Ok(())
 }

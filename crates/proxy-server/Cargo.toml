@@ -4,14 +4,14 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Cross-platform QUIC exit server for vpnbridge"
+description = "Cross-platform QUIC and gRPC exit server for vpnbridge"
 
 [[bin]]
 name = "proxy-server"
 path = "src/main.rs"
 
 [dependencies]
-vpnbridge-proto = { workspace = true }
+vpnbridge-proto = { workspace = true, features = ["grpc"] }
 
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -25,3 +25,5 @@ tracing-subscriber = { workspace = true }
 quinn = "0.11"
 rcgen = "0.14"
 rustls-pemfile = "2"
+tokio-stream = "0.1"
+tonic = { version = "0.14.6", features = ["tls-ring"] }

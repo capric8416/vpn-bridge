@@ -1,5 +1,6 @@
 mod certificate;
 mod config;
+mod grpc;
 mod server;
 
 use std::path::{Path, PathBuf};
@@ -14,7 +15,11 @@ use tracing_subscriber::EnvFilter;
 use crate::config::ServerConfig;
 
 #[derive(Debug, Parser)]
-#[command(name = "proxy-server", version, about = "QUIC proxy exit server")]
+#[command(
+    name = "proxy-server",
+    version,
+    about = "QUIC proxy server with gRPC TCP fallback"
+)]
 struct Cli {
     /// Path to the TOML configuration file. If omitted, searches the current
     /// directory and then the executable's directory for proxy-server.toml.
@@ -35,23 +40,61 @@ async fn main() -> Result<()> {
     certificate::ensure_exists(&cfg.certificate, &cfg.private_key, &cfg.server_name)?;
     if cli.check {
         println!("configuration OK: {}", config_path.display());
-        println!("  listen      : {} (UDP/QUIC)", cfg.listen);
+        if cfg.quic_enabled {
+            println!("  QUIC/UDP    : {}", cfg.quic_listen());
+        } else {
+            println!("  QUIC/UDP    : disabled");
+        }
+        if cfg.grpc_enabled {
+            println!("  gRPC/TCP    : {}", cfg.grpc_listen());
+        } else {
+            println!("  gRPC/TCP    : disabled");
+        }
         println!("  server name : {}", cfg.server_name);
         println!("  certificate : {}", cfg.certificate.display());
         return Ok(());
     }
 
-    let endpoint = make_endpoint(&cfg)?;
-    tracing::info!(listen = %cfg.listen, "proxy-server running");
-    tokio::select! {
-        result = server::run(endpoint.clone(), cfg) => result,
-        _ = tokio::signal::ctrl_c() => {
-            tracing::info!("shutting down");
-            endpoint.close(VarInt::from_u32(0), b"shutdown");
-            endpoint.wait_idle().await;
-            Ok(())
+    let endpoint = cfg.quic_enabled.then(|| make_endpoint(&cfg)).transpose()?;
+    tracing::info!(
+        quic_enabled = cfg.quic_enabled,
+        quic_listen = %cfg.quic_listen(),
+        grpc_enabled = cfg.grpc_enabled,
+        grpc_listen = %cfg.grpc_listen(),
+        "proxy-server running"
+    );
+    let result = match (endpoint.as_ref(), cfg.grpc_enabled) {
+        (Some(endpoint), true) => tokio::select! {
+            result = server::run(endpoint.clone(), cfg.clone()) => result,
+            result = grpc::run(cfg.clone()) => result,
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("shutting down");
+                Ok(())
+            }
+        },
+        (Some(endpoint), false) => tokio::select! {
+            result = server::run(endpoint.clone(), cfg.clone()) => result,
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("shutting down");
+                Ok(())
+            }
+        },
+        (None, true) => tokio::select! {
+            result = grpc::run(cfg.clone()) => result,
+            _ = tokio::signal::ctrl_c() => {
+                tracing::info!("shutting down");
+                Ok(())
+            }
+        },
+        (None, false) => {
+            bail!("all proxy transports are disabled")
         }
+    };
+    if let Some(endpoint) = endpoint {
+        endpoint.close(VarInt::from_u32(0), b"shutdown");
+        endpoint.wait_idle().await;
     }
+    result
 }
 
 fn resolve_config_path(explicit: Option<PathBuf>, file_name: &str) -> Result<PathBuf> {
@@ -103,7 +146,7 @@ fn make_endpoint(cfg: &ServerConfig) -> Result<Endpoint> {
             IdleTimeout::try_from(Duration::from_secs(90)).context("invalid QUIC idle timeout")?,
         ));
     server_config.transport = Arc::new(transport);
-    Endpoint::server(server_config, cfg.listen).context("binding QUIC UDP endpoint")
+    Endpoint::server(server_config, cfg.quic_listen()).context("binding QUIC UDP endpoint")
 }
 
 fn init_tracing(level: &str) {

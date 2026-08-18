@@ -4,14 +4,14 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Cross-platform TUN client for the vpnbridge QUIC proxy"
+description = "Cross-platform TUN client with QUIC and gRPC fallback"
 
 [[bin]]
 name = "proxy-client"
 path = "src/main.rs"
 
 [dependencies]
-vpnbridge-proto = { workspace = true }
+vpnbridge-proto = { workspace = true, features = ["grpc"] }
 
 anyhow = { workspace = true }
 clap = { workspace = true }
@@ -25,4 +25,10 @@ tracing-subscriber = { workspace = true }
 ipstack = "1.0"
 quinn = "0.11"
 rustls-pemfile = "2"
+tokio-stream = { version = "0.1", features = ["net"] }
+tonic = { version = "0.14.6", features = ["tls-ring"] }
 tun-rs = { version = "2", features = ["async"] }
+
+[dev-dependencies]
+rcgen = "0.14"
+tempfile = "3"

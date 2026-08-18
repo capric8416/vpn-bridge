@@ -1,8 +1,10 @@
 mod config;
 mod device;
+mod grpc;
 mod quic;
 mod relay;
 mod route;
+mod transport;
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,14 +18,14 @@ use tun_rs::{DeviceBuilder, Layer};
 
 use crate::config::ClientConfig;
 use crate::device::TunDevice;
-use crate::quic::QuicClient;
 use crate::route::RouteManager;
+use crate::transport::TransportClient;
 
 #[derive(Debug, Parser)]
 #[command(
     name = "proxy-client",
     version,
-    about = "Cross-platform QUIC TUN proxy"
+    about = "Cross-platform TUN proxy with QUIC and gRPC fallback"
 )]
 struct Cli {
     /// Path to the TOML configuration file. If omitted, searches the current
@@ -47,14 +49,23 @@ async fn main() -> Result<()> {
             format!("opening trusted certificate {}", cfg.certificate.display())
         })?;
         println!("configuration OK: {}", config_path.display());
-        println!("  server      : {} (UDP/QUIC)", cfg.server);
+        if cfg.quic_enabled {
+            println!("  QUIC/UDP    : {}", cfg.quic_server());
+        } else {
+            println!("  QUIC/UDP    : disabled");
+        }
+        if cfg.grpc_enabled {
+            println!("  gRPC/TCP    : {}", cfg.grpc_server());
+        } else {
+            println!("  gRPC/TCP    : disabled");
+        }
         println!("  server name : {}", cfg.server_name);
         println!("  certificate : {}", cfg.certificate.display());
         println!("  routes      : {}", join(&cfg.routes));
         return Ok(());
     }
 
-    let client = Arc::new(QuicClient::new(cfg.clone())?);
+    let client = Arc::new(TransportClient::new(cfg.clone())?);
     let (device, device_name) = create_tun(&cfg)?;
     let mut routes = RouteManager::new(&device_name);
     if cfg.tun.auto_route {
@@ -76,7 +87,10 @@ async fn main() -> Result<()> {
     let mut stack = IpStack::new(stack_config, device);
 
     tracing::info!(
-        server = %cfg.server,
+        quic_enabled = cfg.quic_enabled,
+        quic_server = %cfg.quic_server(),
+        grpc_enabled = cfg.grpc_enabled,
+        grpc_server = %cfg.grpc_server(),
         tun = %device_name,
         routes = %join(&cfg.routes),
         "proxy-client running"

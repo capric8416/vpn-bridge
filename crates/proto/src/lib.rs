@@ -24,6 +24,11 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+#[cfg(feature = "grpc")]
+pub mod grpc {
+    tonic::include_proto!("vpnbridge.proxy.v1");
+}
+
 pub const MAGIC: [u8; 4] = *b"VBRG";
 pub const VERSION: u8 = 1;
 

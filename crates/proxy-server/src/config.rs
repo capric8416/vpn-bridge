@@ -9,6 +9,14 @@ use serde::Deserialize;
 #[serde(deny_unknown_fields)]
 pub struct ServerConfig {
     pub listen: SocketAddr,
+    #[serde(default = "default_true")]
+    pub quic_enabled: bool,
+    #[serde(default = "default_true")]
+    pub grpc_enabled: bool,
+    #[serde(default)]
+    pub quic_listen: Option<SocketAddr>,
+    #[serde(default)]
+    pub grpc_listen: Option<SocketAddr>,
     pub token: String,
     #[serde(default = "default_server_name")]
     pub server_name: String,
@@ -44,6 +52,9 @@ impl ServerConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        if !self.quic_enabled && !self.grpc_enabled {
+            bail!("at least one of quic_enabled or grpc_enabled must be true");
+        }
         if self.token.is_empty() {
             bail!("token must not be empty");
         }
@@ -57,6 +68,14 @@ impl ServerConfig {
             bail!("max_concurrent_streams must be greater than zero");
         }
         Ok(())
+    }
+
+    pub fn quic_listen(&self) -> SocketAddr {
+        self.quic_listen.unwrap_or(self.listen)
+    }
+
+    pub fn grpc_listen(&self) -> SocketAddr {
+        self.grpc_listen.unwrap_or(self.listen)
     }
 
     pub fn permits(&self, ip: IpAddr) -> bool {
@@ -99,6 +118,10 @@ fn default_max_streams() -> u32 {
     4_096
 }
 
+fn default_true() -> bool {
+    true
+}
+
 pub fn token_matches(expected: &str, got: &str) -> bool {
     let (expected, got) = (expected.as_bytes(), got.as_bytes());
     let mut difference = (expected.len() ^ got.len()) as u8;
@@ -112,6 +135,35 @@ pub fn token_matches(expected: &str, got: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_listen_address_enables_both_transports() {
+        let cfg: ServerConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:4433"
+token = "secret"
+"#,
+        )
+        .unwrap();
+        assert!(cfg.quic_enabled);
+        assert!(cfg.grpc_enabled);
+        assert_eq!(cfg.quic_listen(), cfg.listen);
+        assert_eq!(cfg.grpc_listen(), cfg.listen);
+    }
+
+    #[test]
+    fn rejects_disabling_all_transports() {
+        let cfg: ServerConfig = toml::from_str(
+            r#"
+listen = "0.0.0.0:4433"
+quic_enabled = false
+grpc_enabled = false
+token = "secret"
+"#,
+        )
+        .unwrap();
+        assert!(cfg.validate().is_err());
+    }
 
     #[test]
     fn token_comparison_is_length_independent() {

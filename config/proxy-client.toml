@@ -1,5 +1,15 @@
+# By default the client prefers UDP/QUIC and falls back to TLS gRPC/TCP on this same port.
 # The server must be an IP address and must not fall inside any route below.
 server = "192.168.122.57:17443"
+
+# Each transport can be disabled independently for testing. Optional address
+# overrides allow QUIC and gRPC to use different ports; without them both use
+# `server` above.
+quic_enabled = true
+grpc_enabled = true
+# quic_server = "192.168.122.57:17443"
+# grpc_server = "192.168.122.57:17444"
+
 server_name = "proxy-server.local"
 token = "e5e9aefc150075dd637f8997f1aec75a2925dc42e61895c5bdf2cf3c0d3878b6f8760dc1fa404dbefbc22755d1b07f87e91ffffee09b6b3b4709a28e0c37c759"
 

@@ -5,13 +5,19 @@
 
 ## Transport model
 
-- One UDP/QUIC connection between client and server.
-- One bidirectional QUIC stream for every TCP or UDP flow.
+- The client prefers UDP/QUIC and automatically falls back to encrypted gRPC over TCP when QUIC
+  cannot connect or open a stream.
+- By default QUIC and gRPC use the same configured IP and port number: UDP for QUIC and TCP for
+  gRPC. Optional per-transport addresses can assign different ports.
+- Every TCP or UDP flow uses one bidirectional QUIC stream or one bidirectional gRPC call.
 - TCP bytes are copied directly over the stream.
-- UDP datagrams use the existing two-byte length framing inside a reliable QUIC stream.
-- There is no TCP transport fallback and no use of unreliable QUIC datagrams.
+- UDP datagrams use the existing two-byte length framing inside the reliable transport stream.
+- After falling back, new flows use gRPC immediately until `reconnect_interval_ms` expires; the
+  next flow probes QUIC again. If gRPC fails first, the client retries QUIC immediately.
+- There is no unencrypted TCP fallback and no use of unreliable QUIC datagrams.
 - TLS uses a server-generated self-signed certificate. The client trusts only the configured
-  certificate, and every stream also carries and validates the configured token.
+  certificate for both QUIC and gRPC, and every stream also carries and validates the configured
+  token.
 
 ## Build
 
@@ -35,7 +41,30 @@ macOS requires root.
    certificate and a private key. On Unix, the private key is created with mode `0600`.
 3. Copy only `proxy-server-cert.pem` to the client, alongside `config/proxy-client.toml`.
 4. Put the same token in the client configuration and set the server IP and proxy routes.
-5. Allow the server's UDP listen port through its firewall.
+5. Allow both UDP and TCP on the server's configured listen port through its firewall. UDP carries
+   QUIC and TCP carries the gRPC fallback.
+
+For transport-specific testing, both programs support independent switches and addresses:
+
+```toml
+# proxy-client.toml
+quic_enabled = true
+grpc_enabled = true
+quic_server = "192.168.122.57:17443"
+grpc_server = "192.168.122.57:17444"
+```
+
+```toml
+# proxy-server.toml
+quic_enabled = true
+grpc_enabled = true
+quic_listen = "0.0.0.0:17443"
+grpc_listen = "0.0.0.0:17444"
+```
+
+Set `quic_enabled = false` to force gRPC/TCP, or `grpc_enabled = false` to test QUIC only. At least
+one transport must remain enabled. If an override is omitted, that transport uses the legacy
+`server` or `listen` value, so existing configuration files remain valid.
 
 ```bash
 proxy-server --config proxy-server.toml --check
@@ -48,7 +77,7 @@ sudo proxy-client --config proxy-client.toml
 `--config`/`-c` is optional. Without it, each program first looks for `proxy-server.toml` or
 `proxy-client.toml` in the current directory, then next to its executable.
 
-The `server_name` values must match. The QUIC server IP must not be inside any client proxy route,
+The `server_name` values must match. The proxy server IP must not be inside any client proxy route,
 otherwise the tunnel would capture itself; configuration validation rejects this case. Routes are
 installed with `ip` on Linux, `route` on macOS, and `netsh` on Windows, then removed on graceful
 shutdown.

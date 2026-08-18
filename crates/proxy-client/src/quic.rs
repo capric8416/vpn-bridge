@@ -10,7 +10,7 @@ use quinn::rustls::pki_types::CertificateDer;
 use quinn::rustls::RootCertStore;
 use quinn::{ClientConfig as QuinnClientConfig, Connection, Endpoint, RecvStream, SendStream};
 use tokio::sync::Mutex;
-use tokio::time::{sleep, timeout};
+use tokio::time::timeout;
 
 use vpnbridge_proto::{Address, Cmd, Request, Response, Status};
 
@@ -27,7 +27,8 @@ impl QuicClient {
         let roots = load_roots(&cfg.certificate)?;
         let client_config = QuinnClientConfig::with_root_certificates(Arc::new(roots))
             .context("creating QUIC TLS configuration")?;
-        let bind = match cfg.server {
+        let server = cfg.quic_server();
+        let bind = match server {
             SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
             SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
         };
@@ -40,50 +41,68 @@ impl QuicClient {
         })
     }
 
-    pub async fn open(&self, cmd: Cmd, target: Address) -> Result<(SendStream, RecvStream)> {
-        loop {
-            let connection = self.connection().await;
-            let connection = match connection {
-                Ok(connection) => connection,
-                Err(err) => {
-                    tracing::warn!(%err, "connecting to QUIC proxy failed; retrying");
-                    sleep(Duration::from_millis(self.cfg.reconnect_interval_ms)).await;
-                    continue;
-                }
-            };
-            let (mut send, mut recv) = match connection.open_bi().await {
-                Ok(streams) => streams,
-                Err(err) => {
-                    tracing::warn!(%err, "opening QUIC stream failed; reconnecting");
-                    self.invalidate().await;
-                    continue;
-                }
-            };
-            let request = Request {
-                cmd,
-                token: self.cfg.token.clone(),
-                target: target.clone(),
-            };
-            request
-                .write_to(&mut send)
-                .await
-                .with_context(|| format!("sending proxy request for {target}"))?;
-            let response = timeout(
-                Duration::from_millis(self.cfg.connect_timeout_ms),
-                Response::read_from(&mut recv),
-            )
+    pub async fn open(
+        &self,
+        cmd: Cmd,
+        target: Address,
+    ) -> std::result::Result<(SendStream, RecvStream), QuicOpenError> {
+        let connection = self
+            .connection()
             .await
-            .with_context(|| format!("proxy response timed out for {target}"))??;
-            if response.status != Status::Ok {
-                let message = if response.message.is_empty() {
-                    response.status.to_string()
-                } else {
-                    format!("{}: {}", response.status, response.message)
-                };
-                bail!("proxy refused {target}: {message}");
+            .map_err(QuicOpenError::Unavailable)?;
+        let (mut send, mut recv) = match connection.open_bi().await {
+            Ok(streams) => streams,
+            Err(err) => {
+                self.invalidate().await;
+                return Err(QuicOpenError::Unavailable(
+                    anyhow::Error::new(err).context("opening QUIC stream"),
+                ));
             }
-            return Ok((send, recv));
+        };
+        let request = Request {
+            cmd,
+            token: self.cfg.token.clone(),
+            target: target.clone(),
+        };
+        if let Err(err) = request.write_to(&mut send).await {
+            self.invalidate().await;
+            return Err(QuicOpenError::Unavailable(
+                anyhow::Error::new(err).context(format!("sending QUIC proxy request for {target}")),
+            ));
         }
+        let response = match timeout(
+            Duration::from_millis(self.cfg.connect_timeout_ms),
+            Response::read_from(&mut recv),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(err)) => {
+                self.invalidate().await;
+                return Err(QuicOpenError::Unavailable(
+                    anyhow::Error::new(err)
+                        .context(format!("reading QUIC proxy response for {target}")),
+                ));
+            }
+            Err(err) => {
+                self.invalidate().await;
+                return Err(QuicOpenError::Unavailable(
+                    anyhow::Error::new(err)
+                        .context(format!("QUIC proxy response timed out for {target}")),
+                ));
+            }
+        };
+        if response.status != Status::Ok {
+            let message = if response.message.is_empty() {
+                response.status.to_string()
+            } else {
+                format!("{}: {}", response.status, response.message)
+            };
+            return Err(QuicOpenError::Rejected(anyhow::anyhow!(
+                "proxy refused {target}: {message}"
+            )));
+        }
+        Ok((send, recv))
     }
 
     async fn connection(&self) -> Result<Connection> {
@@ -95,7 +114,7 @@ impl QuicClient {
         }
         let connecting = self
             .endpoint
-            .connect(self.cfg.server, &self.cfg.server_name)
+            .connect(self.cfg.quic_server(), &self.cfg.server_name)
             .context("starting QUIC connection")?;
         let connection = timeout(
             Duration::from_millis(self.cfg.connect_timeout_ms),
@@ -103,7 +122,7 @@ impl QuicClient {
         )
         .await
         .context("QUIC connection timed out")??;
-        tracing::info!(server = %self.cfg.server, "QUIC connection established");
+        tracing::info!(server = %self.cfg.quic_server(), "QUIC connection established");
         *slot = Some(connection.clone());
         Ok(connection)
     }
@@ -111,6 +130,11 @@ impl QuicClient {
     async fn invalidate(&self) {
         self.connection.lock().await.take();
     }
+}
+
+pub enum QuicOpenError {
+    Unavailable(anyhow::Error),
+    Rejected(anyhow::Error),
 }
 
 fn load_roots(path: &Path) -> Result<RootCertStore> {

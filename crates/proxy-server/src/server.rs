@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use quinn::{Connection, Endpoint, RecvStream, SendStream};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpSocket, TcpStream, UdpSocket};
 use tokio::time::timeout;
 
@@ -50,7 +50,7 @@ async fn serve_connection(connection: Connection, cfg: Arc<ServerConfig>) -> Res
 
 async fn handle_stream(
     cfg: Arc<ServerConfig>,
-    mut send: SendStream,
+    send: SendStream,
     mut recv: RecvStream,
     peer: SocketAddr,
 ) -> Result<()> {
@@ -58,12 +58,26 @@ async fn handle_stream(
         .await
         .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "request timed out"))??;
 
+    handle_request(cfg, request, send, recv, peer).await
+}
+
+pub(crate) async fn handle_request<W, R>(
+    cfg: Arc<ServerConfig>,
+    request: Request,
+    mut send: W,
+    recv: R,
+    peer: SocketAddr,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
     if !token_matches(&cfg.token, &request.token) {
         tracing::warn!(%peer, "rejected stream with invalid token");
         Response::err(Status::AuthFailed, "invalid token")
             .write_to(&mut send)
             .await?;
-        send.finish()?;
+        send.shutdown().await?;
         return Ok(());
     }
 
@@ -98,14 +112,18 @@ async fn handle_stream(
     }
 }
 
-async fn serve_tcp(
+async fn serve_tcp<W, R>(
     cfg: &ServerConfig,
-    mut send: SendStream,
-    recv: RecvStream,
+    mut send: W,
+    recv: R,
     peer: SocketAddr,
     target: &Address,
     candidates: &[SocketAddr],
-) -> Result<()> {
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
     let dial_timeout = Duration::from_millis(cfg.connect_timeout_ms);
     let mut last_error = None;
     let mut upstream = None;
@@ -139,14 +157,18 @@ async fn serve_tcp(
     Ok(())
 }
 
-async fn serve_udp(
+async fn serve_udp<W, R>(
     cfg: &ServerConfig,
-    mut send: SendStream,
-    recv: RecvStream,
+    mut send: W,
+    recv: R,
     peer: SocketAddr,
     target: &Address,
     destination: SocketAddr,
-) -> Result<()> {
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
     let bind = match cfg.bind_ip {
         Some(ip) if ip.is_ipv4() == destination.is_ipv4() => SocketAddr::new(ip, 0),
         _ if destination.is_ipv4() => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
@@ -187,30 +209,34 @@ async fn serve_udp(
     Ok(())
 }
 
-async fn relay_tcp(
-    upstream: TcpStream,
-    mut quic_send: SendStream,
-    mut quic_recv: RecvStream,
-) -> Result<()> {
+async fn relay_tcp<W, R>(upstream: TcpStream, mut proxy_send: W, mut proxy_recv: R) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
     let (mut upstream_recv, mut upstream_send) = upstream.into_split();
     let upload = async {
-        tokio::io::copy(&mut quic_recv, &mut upstream_send).await?;
+        tokio::io::copy(&mut proxy_recv, &mut upstream_send).await?;
         upstream_send.shutdown().await
     };
     let download = async {
-        tokio::io::copy(&mut upstream_recv, &mut quic_send).await?;
-        quic_send.finish().map_err(io::Error::other)
+        tokio::io::copy(&mut upstream_recv, &mut proxy_send).await?;
+        proxy_send.shutdown().await
     };
     tokio::try_join!(upload, download)?;
     Ok(())
 }
 
-async fn relay_udp(
+async fn relay_udp<W, R>(
     socket: UdpSocket,
-    mut quic_send: SendStream,
-    mut quic_recv: RecvStream,
+    mut proxy_send: W,
+    mut proxy_recv: R,
     idle: Duration,
-) -> Result<()> {
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
     let socket = Arc::new(socket);
     let upload_socket = socket.clone();
     let activity = Arc::new(AtomicU64::new(0));
@@ -218,7 +244,7 @@ async fn relay_udp(
     let upload = async move {
         let mut buffer = Vec::new();
         loop {
-            let length = read_datagram(&mut quic_recv, &mut buffer).await?;
+            let length = read_datagram(&mut proxy_recv, &mut buffer).await?;
             upload_socket.send(&buffer[..length]).await?;
             upload_activity.fetch_add(1, Ordering::Relaxed);
         }
@@ -232,7 +258,7 @@ async fn relay_udp(
             match timeout(idle, socket.recv(&mut buffer)).await {
                 Ok(result) => {
                     let length = result?;
-                    write_datagram(&mut quic_send, &buffer[..length]).await?;
+                    write_datagram(&mut proxy_send, &buffer[..length]).await?;
                 }
                 Err(_) => {
                     let now = activity.load(Ordering::Relaxed);
@@ -276,9 +302,12 @@ async fn resolve(target: &Address) -> io::Result<Vec<SocketAddr>> {
     }
 }
 
-async fn reject(send: &mut SendStream, status: Status, message: impl Into<String>) -> Result<()> {
+async fn reject<W>(send: &mut W, status: Status, message: impl Into<String>) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
     Response::err(status, message).write_to(send).await?;
-    send.finish()?;
+    send.shutdown().await?;
     Ok(())
 }
 
@@ -305,6 +334,10 @@ mod tests {
         let server_address = server_endpoint.local_addr().unwrap();
         let cfg = Arc::new(ServerConfig {
             listen: server_address,
+            quic_enabled: true,
+            grpc_enabled: true,
+            quic_listen: None,
+            grpc_listen: None,
             token: "test-token".into(),
             server_name: "vpnbridge.local".into(),
             certificate: PathBuf::new(),

@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package vpnbridge.proxy.v1;
+
+// Each Open call carries one proxied TCP or UDP flow. The first frame is the
+// existing vpnbridge request/response handshake; later frames carry its byte
+// stream unchanged, including length-prefixed UDP datagrams.
+service ProxyService {
+  rpc Open(stream TunnelFrame) returns (stream TunnelFrame);
+}
+
+message TunnelFrame {
+  bytes payload = 1;
+}
